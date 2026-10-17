@@ -55,8 +55,8 @@ button:disabled{opacity:.5;cursor:default}
   .sheet{box-shadow:none;break-after:page}
   .sheet:last-child{break-after:auto}
   .label{outline:none}
-  /* cut lines print only when the "Print cut lines" box is ticked */
-  body.cut .label{outline:0.3pt solid #9ca3af;outline-offset:-0.3pt}
+  /* cut lines print only when the "Print cut lines" box is ticked; a border prints more reliably than an outline */
+  body.cut .label{border:0.3pt solid #888}
 }
 </style>
 </head>
