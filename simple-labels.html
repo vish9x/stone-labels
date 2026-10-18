@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Simple Stone Labels</title>
+<script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.6/dist/JsBarcode.all.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<style>
+:root{--bg:#f4f5f7;--card:#ffffff;--text:#1d1f23;--muted:#6b7280;--accent:#2563eb;--border:#d1d5db}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--bg:#15171c;--card:#1f2228;--text:#e8eaed;--muted:#9aa0a6;--accent:#60a5fa;--border:#3a3f48}}
+:root[data-theme="dark"]{--bg:#15171c;--card:#1f2228;--text:#e8eaed;--muted:#9aa0a6;--accent:#60a5fa;--border:#3a3f48}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,"Segoe UI",sans-serif;font-size:15px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+header{padding:16px 20px;border-bottom:1px solid var(--border);background:var(--card)}
+h1{margin:0;font-size:18px}
+.panel{display:flex;flex-wrap:wrap;gap:16px;align-items:end;padding:16px 20px;background:var(--card);border-bottom:1px solid var(--border)}
+.panel label{display:flex;flex-direction:column;font-size:12px;color:var(--muted);gap:4px}
+.panel input[type=number]{width:90px;padding:6px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text)}
+.check{flex-direction:row !important;align-items:center;color:var(--text) !important}
+button{padding:9px 16px;border:0;border-radius:6px;background:var(--accent);color:#fff;font-weight:600;cursor:pointer}
+button.alt{background:transparent;color:var(--accent);border:1px solid var(--accent)}
+button:disabled{opacity:.5;cursor:default}
+.muted{color:var(--muted);font-size:13px}
+.warn{color:#dc2626;font-weight:600;font-size:13px}
+#preview{padding:24px 0;display:flex;flex-direction:column;align-items:center;gap:8mm;overflow-x:auto;max-width:100%}
+
+/* A4 paper */
+.sheet{width:210mm;height:297mm;display:grid;background:#fff;color:#000;box-sizing:border-box;overflow:hidden;flex-shrink:0}
+@media screen{.sheet{box-shadow:0 2px 10px rgba(0,0,0,.25)}}
+
+/* One label. Sizes use cqw/cqh so the design scales with the label size. */
+.label{position:relative;container-type:size;overflow:hidden;background:#fff;color:#000;font-family:Arial,Helvetica,sans-serif;line-height:1;border:0}
+@media screen{.label{outline:1px dashed #9ca3af}}
+.label span{position:absolute;white-space:nowrap;font-size:6cqw}
+/* Top: ID bold left, shape middle, clarity right. Right side: color under clarity. Bottom: certificate bold left, weight bold right. */
+.label .id{left:6cqw;top:8cqh;font-size:8cqw;font-weight:700}
+.label .shape{left:50cqw;top:9cqh;transform:translateX(-50%)}
+.label .clar{right:6cqw;top:9cqh}
+.label .color{right:6cqw;top:40cqh}
+.label .lab{left:6cqw;bottom:8cqh;font-size:6.5cqw;font-weight:700}
+.label .wt{right:6cqw;bottom:8cqh;font-size:6.5cqw;font-weight:700}
+
+@media print{
+  @page{size:A4;margin:0}
+  body{background:#fff;padding:0}
+  .no-print{display:none !important}
+  #preview{padding:0;gap:0;overflow:visible}
+  .sheet{box-shadow:none;break-after:page}
+  .sheet:last-child{break-after:auto}
+  .label{outline:none}
+  /* cut lines print only when the "Print cut lines" box is ticked */
+  body.cut .label{border:0.3pt solid #888}
+}
+</style>
+</head>
+<body>
+<header><h1>Simple Stone Labels</h1></header>
+
+<div class="panel no-print">
+  <button id="pickBtn">Import Excel / CSV</button>
+  <button id="sampleBtn" class="alt">Load sample</button>
+  <button id="resetBtn" class="alt">Clear and reset</button>
+  <input id="file" type="file" accept=".csv,.xlsx,.xls" hidden>
+  <label class="check"><input id="incSold" type="checkbox"> Include SOLD stones</label>
+  <label class="check"><input id="cutLines" type="checkbox" checked> Print cut lines</label>
+  <label>Label width (mm)<input id="w" type="number" step="0.1" value="60"></label>
+  <label>Label height (mm)<input id="h" type="number" step="0.1" value="25"></label>
+  <label>Columns<input id="cols" type="number" min="1" value="3"></label>
+  <label>Rows<input id="rows" type="number" min="1" value="11"></label>
+  <label>Top margin (mm)<input id="top" type="number" step="0.1" value="11"></label>
+  <label>Left margin (mm)<input id="left" type="number" step="0.1" value="15"></label>
+  <label>Skip first N labels<input id="skip" type="number" min="0" value="0"></label>
+  <button id="printBtn" disabled>Print A4</button>
+  <div><div id="count" class="muted">No file loaded.</div><div id="warn" class="warn"></div></div>
+</div>
+
+<main id="preview"></main>
+
+<script>
+let allStones = [];
+const $ = id => document.getElementById(id);
+
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+// Cell value as clean text
+const val = x => {
+  if (x === undefined || x === null) return '';
+  if (typeof x === 'number') return Number.isInteger(x) ? String(x) : x.toFixed(2);
+  return String(x).trim();
+};
+// Weight with 2 decimals (1.6 -> "1.60")
+const pct = x => { const n = parseFloat(x); return isNaN(n) ? '' : n.toFixed(2); };
+
+const DEFAULTS = { w: 60, h: 25, cols: 3, rows: 11, top: 11, left: 15, skip: 0, incSold: false, cutLines: true };
+
+function resetAll() {
+  allStones = [];
+  $('file').value = '';
+  for (const k of ['w','h','cols','rows','top','left','skip']) $(k).value = DEFAULTS[k];
+  $('incSold').checked = DEFAULTS.incSold;
+  $('cutLines').checked = DEFAULTS.cutLines;
+  $('warn').textContent = '';
+  $('printBtn').disabled = true;
+  render();
+}
+
+// Accepts the column names used in the stock sheet and in list.xlsx ("STOCK id")
+const ID_COLS = ['Stone ID', 'STOCK id', 'Stock ID', 'Stock id'];
+const pick = (r, names) => { const k = names.find(n => n in r); return k === undefined ? '' : r[k]; };
+
+function parseRows(rows) {
+  if (!rows.length || !ID_COLS.some(n => n in rows[0])) {
+    $('warn').textContent = 'This file has no "Stone ID" or "STOCK id" column. Please import the stock sheet.';
+    return;
+  }
+  $('warn').textContent = '';
+  allStones = rows.map(r => {
+    const fancy = val(r['Fancy Color']);
+    const intensity = val(r['Fancy Color Intensity']);
+    return {
+      id: val(pick(r, ID_COLS)),
+      // A file with no Availability column counts every stone as available
+      avail: val(r['Availability']) || 'Available',
+      lab: val(r['Lab']) || 'IGI',
+      cert: val(r['Certificate #']),
+      shape: val(r['Shape']),
+      // Some weights are typed with a comma, e.g. "1,04"
+      weight: pct(String(r['Weight'] ?? '').replace(',', '.')),
+      clarity: val(r['Clarity']),
+      color: fancy ? ('FANCY ' + [intensity, fancy].filter(Boolean).join(' ')) : val(r['Color'])
+    };
+  }).filter(s => s.id);
+  $('printBtn').disabled = false;
+  render();
+}
+
+function opts() {
+  return {
+    w: +$('w').value, h: +$('h').value,
+    cols: Math.max(1, +$('cols').value), rows: Math.max(1, +$('rows').value),
+    top: +$('top').value, left: +$('left').value,
+    skip: Math.max(0, +$('skip').value),
+    incSold: $('incSold').checked,
+    cutLines: $('cutLines').checked
+  };
+}
+
+// Layout follows the sample label: ID, shape, clarity on the top row; color; lab and certificate; weight
+function labelHTML(s) {
+  return `<div class="label">` +
+    `<span class="id">${esc(s.id)}</span>` +
+    `<span class="shape">${esc(s.shape)}</span>` +
+    `<span class="clar">${esc(s.clarity)}</span>` +
+    `<span class="color">${esc(s.color)}</span>` +
+    `<span class="lab">${esc(s.lab)} : ${esc(s.cert)}</span>` +
+    `<span class="wt">${esc(s.weight)}</span>` +
+    `</div>`;
+}
+
+function render() {
+  const o = opts();
+  document.body.classList.toggle('cut', o.cutLines);
+  if (!allStones.length) {
+    $('preview').innerHTML = '<p class="muted">No stones loaded. Click "Import Excel / CSV" or "Load sample".</p>';
+    $('count').textContent = 'Nothing to print yet.';
+    return;
+  }
+  const stones = o.incSold ? allStones : allStones.filter(s => s.avail.toLowerCase() === 'available');
+  const list = [...Array(o.skip).fill(null), ...stones];
+  const per = o.cols * o.rows;
+  const pages = Math.max(1, Math.ceil(list.length / per));
+  const tooBig = o.left + o.cols * o.w > 210 || o.top + o.rows * o.h > 297;
+  if (tooBig) $('warn').textContent = 'Labels do not fit on A4. Reduce the size or the count.';
+  else if (!$('warn').textContent.startsWith('This file')) $('warn').textContent = '';
+  $('count').textContent = `${stones.length} stone(s) to print, ${pages} page(s), ${per} labels per page`;
+
+  let html = '';
+  for (let p = 0; p < pages; p++) {
+    const cells = list.slice(p * per, (p + 1) * per);
+    while (cells.length < per) cells.push(null);
+    html += `<section class="sheet" style="padding:${o.top}mm ${o.left}mm;grid-template-columns:repeat(${o.cols},${o.w}mm);grid-auto-rows:${o.h}mm">` +
+            cells.map(s => s ? labelHTML(s) : '<div class="label"></div>').join('') + '</section>';
+  }
+  $('preview').innerHTML = html;
+
+  document.querySelectorAll('svg.bc').forEach(el => {
+    try {
+      JsBarcode(el, el.dataset.id, { format: 'CODE128', displayValue: false, margin: 0, width: 1.4, height: 60 });
+      el.setAttribute('viewBox', `0 0 ${el.getAttribute('width')} ${el.getAttribute('height')}`);
+      el.setAttribute('preserveAspectRatio', 'none');
+    } catch (e) {
+      el.insertAdjacentHTML('afterend', '<div class="warn">Cannot encode this ID as a barcode</div>');
+    }
+  });
+}
+
+const SAMPLE = [
+{'Stone ID':1816,'Availability':'Available','Shape':'EMERALD','Weight':10.01,'Clarity':'SI1','Color':'J','Certificate #':634439848},
+{'Stone ID':1821,'Availability':'Available','Shape':'ROUND','Weight':1.17,'Clarity':'VS2','Color':'E','Certificate #':689556630},
+{'Stone ID':1859,'Availability':'Available','Shape':'ROUND','Weight':2.58,'Clarity':'VVS2','Color':'G','Certificate #':677558191},
+{'Stone ID':1889,'Availability':'Available','Shape':'PEAR','Weight':1.02,'Clarity':'VVS2','Color':'','Fancy Color':'PK','Fancy Color Intensity':'FV','Certificate #':694566428}
+];
+
+$('sampleBtn').addEventListener('click', () => parseRows(SAMPLE));
+$('pickBtn').addEventListener('click', () => $('file').click());
+$('file').addEventListener('change', async e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  const wb = XLSX.read(await f.arrayBuffer(), { type: 'array' });
+  parseRows(XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: '' }));
+});
+['w','h','cols','rows','top','left','skip','incSold','cutLines'].forEach(id => $(id).addEventListener('input', render));
+$('incSold').addEventListener('change', render);
+$('cutLines').addEventListener('change', render);
+$('resetBtn').addEventListener('click', resetAll);
+$('printBtn').addEventListener('click', () => window.print());
+</script>
+</body>
+</html>
